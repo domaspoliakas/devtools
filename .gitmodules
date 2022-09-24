@@ -1,0 +1,6 @@
+[submodule "wsk-lsp/tree-sitter"]
+	path = wsk-lsp/tree-sitter
+	url = git@github.com:tree-sitter/tree-sitter.git
+[submodule "wsk-lsp/tree-sitter-json"]
+	path = wsk-lsp/tree-sitter-json
+	url = git@github.com:tree-sitter/tree-sitter-json.git
