@@ -58,6 +58,15 @@ object LSP:
       )
       .flatten
 
+    val errorQuery = Resource
+      .eval(
+        ts.Query
+          .create[F](TestData.errorQuery)
+          .leftMap(new Exception(_))
+          .liftTo[F]
+      )
+      .flatten
+
     val statePool = KeyPool
       .Builder((_: DocumentUri) => DocumentState.create[F])
       .withIdleTimeAllowedInPool(FiniteDuration(292 * 364, TimeUnit.DAYS))
@@ -70,9 +79,16 @@ object LSP:
       configSchemaQueryResource,
       idAndNameRequestQuery,
       nameAndIdRequestQuery,
+      errorQuery,
       statePool
     ).mapN {
-      (configSchemaQuery, idAndNameQuery, nameAndIdQuery, documentStatePool) =>
+      (
+          configSchemaQuery,
+          idAndNameQuery,
+          nameAndIdQuery,
+          errorQuery,
+          documentStatePool
+      ) =>
           // format: off
           LSPBuilder
             .create[F]
@@ -81,7 +97,7 @@ object LSP:
             .handleRequest(textDocument.hover)(hoverHandler(documentStatePool)) 
             .handleRequest(textDocument.definition)(definitionHandler(documentStatePool, idAndNameQuery, nameAndIdQuery)) 
             .handleNotification(textDocument.didOpen)(didOpenHandler(treesitter, documentStatePool))
-            .handleNotification(textDocument.didChange)(didChangeHandler(documentStatePool, treesitter))
+            .handleNotification(textDocument.didChange)(didChangeHandler(documentStatePool, errorQuery, treesitter))
             .handleNotification(textDocument.didClose)(didCloseHandler(documentStatePool))
           // format: on
 
@@ -108,6 +124,14 @@ object LSP:
                 TextDocumentSyncOptions(
                   openClose = Opt(true),
                   change = Opt(TextDocumentSyncKind.Full)
+                )
+              ),
+              diagnosticProvider = Opt(
+                DiagnosticRegistrationOptions(
+                  documentSelector = Opt.empty,
+                  identifier = Opt("wsk-lsp"),
+                  interFileDependencies = false,
+                  workspaceDiagnostics = false
                 )
               )
             ),
@@ -156,6 +180,7 @@ object LSP:
 
   def didChangeHandler[F[_]: Console](
       documentStatePool: KeyPool[F, DocumentUri, DocumentState[F]],
+      errorQuery: ts.Query[F],
       treesitter: ts.Treesitter[F]
   )(using
       F: Concurrent[F]
@@ -174,7 +199,37 @@ object LSP:
             managed.value.update(
               treesitter.parse(newFullText).tupleRight(newFullText)
             )
-          )
+          ) >> managed.value.treeAndText.flatMap {
+          case None => F.unit
+          case Some((tree, text)) =>
+            tree.rootNode.flatMap(rootNode =>
+              errorQuery
+                .matchesIn(rootNode, text)
+                .map { case ts.QueryMatch(captures) =>
+                  captures.get("error").map { error =>
+                    Diagnostic(
+                      range = error.range.toLspRange,
+                      message = "Syntax error",
+                      severity = Opt(DiagnosticSeverity.Error)
+                    )
+                  }
+                }
+                .unNone
+                .compile
+                .toVector
+                .flatMap { diag =>
+                  in.toClient.notification(
+                    textDocument.publishDiagnostics,
+                    PublishDiagnosticsParams(
+                      in.params.textDocument.uri,
+                      diagnostics = diag
+                    )
+                  )
+                }
+            )
+
+        }
+
       }
     }
 

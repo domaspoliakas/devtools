@@ -33,3 +33,5 @@ object TestData:
                                        (pair key: (string (string_content) @id_key (#eq? @id_key "id")) value: (string (string_content) @id_value)) 
                                              ) @request)) )
 )"""
+
+  val errorQuery: String = """(ERROR) @error"""
